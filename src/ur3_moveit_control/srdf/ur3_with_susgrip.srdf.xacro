@@ -20,12 +20,13 @@
 
   <end_effector
     name="${prefix}susgrip"
-    parent_link="${prefix}gripper_body"
+    parent_link="${prefix}tool0"
     group="${prefix}gripper"
     parent_group="${prefix}$(arg name)_manipulator"/>
 
   <disable_collisions link1="${prefix}tool0" link2="${prefix}gripper_body" reason="Adjacent"/>
   <disable_collisions link1="${prefix}tool0" link2="${prefix}spacer_cylinder" reason="Adjacent"/>
+  <disable_collisions link1="${prefix}wrist_3_link" link2="${prefix}spacer_cylinder" reason="Adjacent"/>
   <disable_collisions link1="${prefix}gripper_body" link2="${prefix}spacer_cylinder" reason="Adjacent"/>
   <disable_collisions link1="${prefix}gripper_body" link2="${prefix}finger_left" reason="Adjacent"/>
   <disable_collisions link1="${prefix}gripper_body" link2="${prefix}finger_right" reason="Adjacent"/>
