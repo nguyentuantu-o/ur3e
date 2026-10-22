@@ -346,6 +346,7 @@ namespace ur3_moveit_control
       "maximum_gripper_position_for_attach", 0.051);
     minimum_gripper_effort_for_attach_ = parameter(
       "minimum_gripper_effort_for_attach", 0.0001);
+    use_gazebo_attachment_ = parameter("use_gazebo_attachment", true);
 
     gazebo_attach_pub_ = node_->create_publisher<std_msgs::msg::Empty>(
       "/pick_box/attach", rclcpp::QoS(1).reliable());
@@ -363,6 +364,10 @@ namespace ur3_moveit_control
 
     move_group_.setPlanningTime(15.0);
     move_group_.setNumPlanningAttempts(20);
+
+    RCLCPP_INFO(
+      node_->get_logger(), "Object attachment mode: %s",
+      use_gazebo_attachment_ ? "Gazebo + MoveIt" : "MoveIt planning scene only (real hardware)");
 
     // Use the gripper grasp center as the Cartesian pose target whenever the
     // gripper model is present. Keep tool0 as the fallback for the arm-only
@@ -914,70 +919,77 @@ namespace ur3_moveit_control
     addPickBoxObstacle(object_x, object_y, object_z);
     rclcpp::sleep_for(std::chrono::milliseconds(200));
 
-    // First create the physical fixed joint in Gazebo.  Give the ROS-Gazebo
-    // bridge and the DetachableJoint system a few simulation iterations to
-    // consume the request before the arm starts moving.
-    const double attempt_timeout =
-      attach_confirmation_timeout_ / static_cast<double>(attach_request_attempts_);
-    bool gazebo_attached = false;
-    for (int attempt = 1; attempt <= attach_request_attempts_; ++attempt)
+    // In simulation, first create the physical fixed joint in Gazebo and wait
+    // for its confirmation. Real hardware has no Gazebo joint, so it only
+    // tracks the carried object in MoveIt's planning scene.
+    if (use_gazebo_attachment_)
     {
+      const double attempt_timeout =
+        attach_confirmation_timeout_ / static_cast<double>(attach_request_attempts_);
+      bool gazebo_attached = false;
+      for (int attempt = 1; attempt <= attach_request_attempts_; ++attempt)
       {
-        std::lock_guard<std::mutex> lock(attachment_state_mutex_);
-        attachment_state_received_ = false;
-      }
+        {
+          std::lock_guard<std::mutex> lock(attachment_state_mutex_);
+          attachment_state_received_ = false;
+        }
 
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "Gazebo attach request %d/%d.", attempt, attach_request_attempts_);
-      gazebo_attach_pub_->publish(std_msgs::msg::Empty{});
-      if (waitForAttachmentState(true, attempt_timeout))
-      {
-        gazebo_attached = true;
-        break;
-      }
-
-      if (attempt < attach_request_attempts_)
-      {
-        // If Gazebo created the joint but its state message was lost, force a
-        // detached state before retrying. This guarantees the next successful
-        // request produces a fresh "attached" transition and confirmation.
-        RCLCPP_WARN(
+        RCLCPP_INFO(
           node_->get_logger(),
-          "No attachment confirmation after request %d/%d; resetting the "
-          "Gazebo joint before retrying.",
-          attempt, attach_request_attempts_);
-        gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
-        rclcpp::sleep_for(std::chrono::milliseconds(200));
+          "Gazebo attach request %d/%d.", attempt, attach_request_attempts_);
+        gazebo_attach_pub_->publish(std_msgs::msg::Empty{});
+        if (waitForAttachmentState(true, attempt_timeout))
+        {
+          gazebo_attached = true;
+          break;
+        }
+
+        if (attempt < attach_request_attempts_)
+        {
+          // If Gazebo created the joint but its state message was lost, force a
+          // detached state before retrying. This guarantees the next successful
+          // request produces a fresh "attached" transition and confirmation.
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "No attachment confirmation after request %d/%d; resetting the "
+            "Gazebo joint before retrying.",
+            attempt, attach_request_attempts_);
+          gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
+          rclcpp::sleep_for(std::chrono::milliseconds(200));
+        }
+      }
+
+      if (!gazebo_attached)
+      {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Gazebo did not confirm attachment_state='attached' after %d requests "
+          "within %.1f seconds; the lift is blocked.",
+          attach_request_attempts_, attach_confirmation_timeout_);
+        return false;
       }
     }
 
-    if (!gazebo_attached)
-    {
-      RCLCPP_ERROR(
-        node_->get_logger(),
-        "Gazebo did not confirm attachment_state='attached' after %d requests "
-        "within %.1f seconds; the lift is blocked.",
-        attach_request_attempts_, attach_confirmation_timeout_);
-      return false;
-    }
-
-    // Then mirror that state in MoveIt so collision checking treats the box
-    // as carried payload and permits contact with the gripper touch links.
+    // Track the box as a carried payload in MoveIt so collision checking
+    // permits contact with the gripper touch links.
     if (!move_group_.attachObject(object_id, attach_link, touch_links))
     {
       RCLCPP_ERROR(
         node_->get_logger(),
-        "Failed to attach %s to %s in MoveIt; rolling back the Gazebo joint.",
+        "Failed to attach %s to %s in MoveIt.",
         object_id.c_str(), attach_link.c_str());
-      gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
+      if (use_gazebo_attachment_)
+      {
+        gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
+      }
       return false;
     }
 
     RCLCPP_INFO(
       node_->get_logger(),
-      "Gazebo confirmed attachment and MoveIt attached %s to %s.",
-      object_id.c_str(), attach_link.c_str());
+      "Attached %s to %s in the MoveIt planning scene%s.",
+      object_id.c_str(), attach_link.c_str(),
+      use_gazebo_attachment_ ? " after Gazebo confirmation" : "");
 
     // Give the planning scene monitor time to receive the attached-object update.
     rclcpp::sleep_for(std::chrono::milliseconds(200));
@@ -995,19 +1007,23 @@ namespace ur3_moveit_control
 
     // Always release the physical Gazebo joint. Previously a MoveIt scene
     // mismatch returned early and prevented this message from being sent.
+    bool gazebo_detached = true;
+    if (use_gazebo_attachment_)
     {
-      std::lock_guard<std::mutex> lock(attachment_state_mutex_);
-      attachment_state_received_ = false;
-    }
-    gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
-    const bool gazebo_detached = waitForAttachmentState(
-      false, attach_confirmation_timeout_);
-    if (!gazebo_detached)
-    {
-      RCLCPP_ERROR(
-        node_->get_logger(),
-        "Gazebo did not confirm attachment_state='detached' within %.1f seconds.",
-        attach_confirmation_timeout_);
+      {
+        std::lock_guard<std::mutex> lock(attachment_state_mutex_);
+        attachment_state_received_ = false;
+      }
+      gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
+      gazebo_detached = waitForAttachmentState(
+        false, attach_confirmation_timeout_);
+      if (!gazebo_detached)
+      {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "Gazebo did not confirm attachment_state='detached' within %.1f seconds.",
+          attach_confirmation_timeout_);
+      }
     }
 
     // Mirror the released state in MoveIt. A missing attached collision
@@ -1017,7 +1033,7 @@ namespace ur3_moveit_control
     {
       RCLCPP_WARN(
         node_->get_logger(),
-        "%s was not attached in MoveIt; Gazebo detach was still requested.",
+        "%s was not attached in MoveIt; continuing with scene cleanup.",
         object_id.c_str());
     }
 
@@ -1042,8 +1058,11 @@ namespace ur3_moveit_control
     // A failed trial may leave either Gazebo's fixed joint or MoveIt's
     // attached object active. Always release both representations before the
     // test runner teleports the one reusable box to its next random pose.
-    gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
-    rclcpp::sleep_for(std::chrono::milliseconds(300));
+    if (use_gazebo_attachment_)
+    {
+      gazebo_detach_pub_->publish(std_msgs::msg::Empty{});
+      rclcpp::sleep_for(std::chrono::milliseconds(300));
+    }
 
     const bool moveit_detached = move_group_.detachObject(object_id);
     if (!moveit_detached)
@@ -1059,8 +1078,9 @@ namespace ur3_moveit_control
 
     RCLCPP_INFO(
       node_->get_logger(),
-      "Prepared the next trial: Gazebo joint released and stale MoveIt "
-      "pick_box object removed.");
+      "Prepared the next trial: %s and stale MoveIt "
+      "pick_box object removed.",
+      use_gazebo_attachment_ ? "Gazebo joint released" : "hardware mode (no Gazebo joint)");
     return true;
   }
 

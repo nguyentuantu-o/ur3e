@@ -61,7 +61,7 @@ Chế độ này thực thi các lệnh điều khiển trực tiếp tới ph�
 
 ### Terminal 1: Khởi chạy trình điều khiển phần cứng (Driver)
 ```bash
-source ~/ros_ws/install/setup.bash
+source ~/Downloads/uet_ur3-gripper/src/ur3_moveit_control/scripts/activate_uet_ros.bash
 ros2 launch ur_robot_driver ur_control.launch.py \
   ur_type:=ur3e \
   robot_ip:=192.168.1.10 \
@@ -78,7 +78,7 @@ ros2 launch ur_robot_driver ur_control.launch.py \
 
 ### Terminal 2: Khởi chạy MoveIt Server và Node điều khiển
 ```bash
-source ~/ros_ws/install/setup.bash
+source ~/Downloads/uet_ur3-gripper/src/ur3_moveit_control/scripts/activate_uet_ros.bash
 ros2 launch ur3_moveit_control ur3_demo.launch.py \
   ur_type:=ur3e \
   use_sim_time:=false \
@@ -90,6 +90,35 @@ gắn SusGrip, khởi động driver gripper qua cổng serial, và đưa joint 
 gripper lên `/joint_states`. Action server là `/gripper_controller/gripper_cmd`;
 `send_goal_client.py` tự dùng action này trên phần cứng. Nếu gripper dùng cổng
 khác, đổi `gripper_port`; Modbus ID có thể đặt bằng `gripper_slave_id:=1`.
+
+### Terminal 3: Chạy tác vụ gắp và rót trên robot thật
+
+Mở terminal mới và source **cùng script môi trường** trước khi chạy client.
+Không dùng terminal đang báo `ROS_DOMAIN_ID=40`; script của workspace đặt domain
+mặc định là `10`, vì vậy terminal driver, MoveIt và client phải cùng domain.
+Đợi log `UR3 Action Server initialized...` ở Terminal 2 trước khi chạy:
+
+```bash
+source ~/Downloads/uet_ur3-gripper/src/ur3_moveit_control/scripts/activate_uet_ros.bash
+echo "ROS_DOMAIN_ID=$ROS_DOMAIN_ID ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY"
+ros2 action list | grep ur3_control
+```
+
+Khi lệnh trên thấy `/ur3_control`, chạy tác vụ (đổi XYZ theo vị trí chai đo
+trong frame `base_link`):
+
+```bash
+ros2 run ur3_moveit_control send_goal_client.py \
+  --object-x 0.62 --object-y 0.0 --object-z 0.05 \
+  --pour-angle-deg 100
+```
+
+Client tự đưa tay về home, mở gripper, tiếp cận và gắp chai, nâng, di chuyển
+đến điểm rót rồi xoay cổ tay. Lệnh này **bắt đầu chuyển động thật ngay**. Các
+tọa độ ví dụ chỉ đúng nếu bàn/chai được đặt theo bố trí tương ứng; hãy kiểm tra
+TCP, giới hạn vùng làm việc và vị trí rót trong RViz trước khi chạy. Chế độ
+phần cứng cập nhật chai mang theo trong planning scene MoveIt và không cần
+Gazebo.
 
 ---
 

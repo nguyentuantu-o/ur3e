@@ -102,6 +102,7 @@ private:
   double maximum_attach_tcp_z_error_{0.04};
   double maximum_gripper_position_for_attach_{0.051};
   double minimum_gripper_effort_for_attach_{0.0001};
+  bool use_gazebo_attachment_{true};
   std::string last_pose_error_message_;
 };
 

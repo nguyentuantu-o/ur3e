@@ -111,7 +111,11 @@ def launch_setup(context, *args, **kwargs):
             controllers_yaml,
             planning_scene_monitor_yaml,
             custom_config_yaml,
-            {"use_sim_time": use_sim_time}
+            {"use_sim_time": use_sim_time},
+            # Gazebo simulation must confirm physical attachment. On real
+            # hardware, track the carried bottle in MoveIt's planning scene
+            # without waiting for Gazebo topics that do not exist.
+            {"use_gazebo_attachment": ParameterValue(use_sim_time, value_type=bool)}
         ],
     )
 

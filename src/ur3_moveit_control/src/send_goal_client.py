@@ -352,8 +352,11 @@ class UR3ActionClient(Node):
                 f'Client ROS_DOMAIN_ID={os.environ.get("ROS_DOMAIN_ID", "0")}, '
                 'ROS_LOCALHOST_ONLY='
                 f'{os.environ.get("ROS_LOCALHOST_ONLY", "0")}. '
-                'Gazebo, MoveIt, ur3_control_node, and this client must use '
-                'the same ROS discovery environment.'
+                'The client, UR driver, MoveIt, and ur3_control_node must use '
+                'the same ROS discovery environment. For this workspace, open '
+                'a new terminal and run: source '
+                '~/Downloads/uet_ur3-gripper/src/ur3_moveit_control/scripts/'
+                'activate_uet_ros.bash; then retry the client.'
             )
             return False
 
