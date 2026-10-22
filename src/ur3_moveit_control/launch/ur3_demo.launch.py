@@ -1,0 +1,139 @@
+import os
+from launch import LaunchDescription
+from launch.actions import OpaqueFunction, DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition, UnlessCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Command, FindExecutable
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+from launch_ros.parameter_descriptions import ParameterValue
+import yaml
+from ament_index_python.packages import get_package_share_directory
+
+def load_yaml(package_name, file_path):
+    try:
+        package_path = get_package_share_directory(package_name)
+        absolute_path = os.path.join(package_path, file_path)
+        with open(absolute_path, "r") as file:
+            return yaml.safe_load(file)
+    except Exception:
+        return None
+
+def launch_setup(context, *args, **kwargs):
+    ur_type = LaunchConfiguration("ur_type")
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    launch_rviz = LaunchConfiguration("launch_rviz")
+    launch_moveit = LaunchConfiguration("launch_moveit")
+    gripper_port = LaunchConfiguration("gripper_port")
+    gripper_slave_id = LaunchConfiguration("gripper_slave_id")
+
+    # Start the physical SusGrip serial driver for real-robot runs. The
+    # simulation launch has its own ros2_control gripper controller.
+    susgrip_hardware_node = Node(
+        condition=UnlessCondition(use_sim_time),
+        package="susgrip_2f_hardware",
+        executable="hardware_interface",
+        name="susgrip_2f_hardware_interface",
+        output="screen",
+        remappings=[("/susgrip/joint_states", "/joint_states")],
+        parameters=[{
+            "serial_port": gripper_port,
+            "slave_id": ParameterValue(gripper_slave_id, value_type=int),
+        }],
+    )
+    # Use the combined UR3e + SusGrip model for MoveIt/RViz in hardware mode.
+    robot_description_content = Command([
+        PathJoinSubstitution([FindExecutable(name="xacro")]), " ",
+        PathJoinSubstitution([FindPackageShare("ur3_moveit_control"), "urdf", "ur3_with_susgrip.urdf.xacro"]), " ",
+        "ur_type:=", ur_type, " ",
+        "sim_ignition:=false", " ",
+        "name:=", "ur",
+    ])
+    robot_description = {"robot_description": ParameterValue(robot_description_content, value_type=str)}
+
+    # 2. Load Semantic Model (SRDF)
+    robot_description_semantic_content = Command([
+        PathJoinSubstitution([FindExecutable(name="xacro")]), " ",
+        PathJoinSubstitution([FindPackageShare("ur3_moveit_control"), "srdf", "ur3_with_susgrip.srdf.xacro"]), " ",
+        "name:=", "ur",
+    ])
+    robot_description_semantic = {"robot_description_semantic": robot_description_semantic_content}
+
+    # 3. Load Kinematics and Joint Limits configurations
+    kinematics_config = load_yaml("ur3_moveit_control", "config/kinematics.yaml")
+    kinematics_yaml = {
+        "robot_description_kinematics": kinematics_config["/**"]["ros__parameters"]["robot_description_kinematics"]
+    }
+    joint_limits_yaml = {"robot_description_planning": load_yaml("ur3_moveit_control", "config/joint_limits.yaml")}
+    custom_config_yaml = load_yaml("ur3_moveit_control", "config/moveit_custom_config.yaml")
+
+    # 4. Load controllers configuration
+    controllers_yaml = load_yaml("ur3_moveit_control", "config/moveit_controllers.yaml")
+
+    # 5. Load planning pipelines and merge with OMPL planner configs
+    planning_pipelines_yaml = load_yaml("ur3_moveit_control", "config/planning_pipelines.yaml")
+    ompl_planning_yaml = load_yaml("ur3_moveit_control", "config/ompl_planning.yaml")
+    if planning_pipelines_yaml and ompl_planning_yaml:
+        planning_pipelines_yaml["planning_pipelines"]["ompl"].update(ompl_planning_yaml)
+
+    # 6. Load planning scene monitor configurations
+    planning_scene_monitor_yaml = load_yaml("ur3_moveit_control", "config/planning_scene_monitor.yaml")
+
+    # 7. Include MoveIt planning server
+    moveit_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([FindPackageShare("ur_moveit_config"), "launch", "ur_moveit.launch.py"])
+        ]),
+        launch_arguments={
+            "ur_type": ur_type,
+            "use_sim_time": use_sim_time,
+            "launch_rviz": launch_rviz,
+            "description_package": "ur3_moveit_control",
+            "description_file": "ur3_with_susgrip.urdf.xacro",
+            "moveit_config_package": "ur3_moveit_control",
+            "moveit_config_file": "ur3_with_susgrip.srdf.xacro",
+            "moveit_joint_limits_file": "joint_limits.yaml",
+        }.items(),
+        condition=IfCondition(launch_moveit)
+    )
+
+    # 8. Launch our custom demo C++ node
+    ur3_control_node = Node(
+        package="ur3_moveit_control",
+        executable="ur3_control_node",
+        output="screen",
+        parameters=[
+            robot_description,
+            robot_description_semantic,
+            kinematics_yaml,
+            joint_limits_yaml,
+            planning_pipelines_yaml,
+            controllers_yaml,
+            planning_scene_monitor_yaml,
+            custom_config_yaml,
+            {"use_sim_time": use_sim_time}
+        ],
+    )
+
+    # Delay the C++ node launch slightly to ensure MoveIt server has started
+    ur3_control_node_delayed = TimerAction(
+        period=5.0,
+        actions=[ur3_control_node]
+    )
+
+    return [
+        susgrip_hardware_node,
+        moveit_launch,
+        ur3_control_node_delayed,
+    ]
+
+def generate_launch_description():
+    declared_arguments = [
+        DeclareLaunchArgument("ur_type", default_value="ur3e", description="Type of UR robot"),
+        DeclareLaunchArgument("use_sim_time", default_value="true", description="Use simulation time (true) or real time (false)"),
+        DeclareLaunchArgument("launch_rviz", default_value="true", description="Launch RViz?"),
+        DeclareLaunchArgument("launch_moveit", default_value="true", description="Launch MoveIt server?"),
+        DeclareLaunchArgument("gripper_port", default_value="/dev/ttyUSB0", description="Serial port for the physical SusGrip gripper"),
+        DeclareLaunchArgument("gripper_slave_id", default_value="1", description="Modbus slave ID for the physical SusGrip gripper"),
+    ]
+    return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])

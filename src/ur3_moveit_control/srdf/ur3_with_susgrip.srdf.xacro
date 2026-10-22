@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
+  <xacro:arg name="name" default="ur"/>
+  <xacro:arg name="prefix" default=""/>
+  <xacro:property name="prefix" value="$(arg prefix)"/>
+
+  <xacro:include filename="$(find ur_moveit_config)/srdf/ur_macro.srdf.xacro"/>
+  <xacro:ur_srdf name="$(arg name)" prefix="$(arg prefix)"/>
+
+  <group name="${prefix}gripper">
+    <joint name="${prefix}gripper_joint"/>
+  </group>
+
+  <group_state name="open" group="${prefix}gripper">
+    <joint name="${prefix}gripper_joint" value="0.06"/>
+  </group_state>
+  <group_state name="closed" group="${prefix}gripper">
+    <joint name="${prefix}gripper_joint" value="0.0"/>
+  </group_state>
+
+  <end_effector
+    name="${prefix}susgrip"
+    parent_link="${prefix}gripper_body"
+    group="${prefix}gripper"
+    parent_group="${prefix}$(arg name)_manipulator"/>
+
+  <disable_collisions link1="${prefix}tool0" link2="${prefix}gripper_body" reason="Adjacent"/>
+  <disable_collisions link1="${prefix}tool0" link2="${prefix}spacer_cylinder" reason="Adjacent"/>
+  <disable_collisions link1="${prefix}gripper_body" link2="${prefix}spacer_cylinder" reason="Adjacent"/>
+  <disable_collisions link1="${prefix}gripper_body" link2="${prefix}finger_left" reason="Adjacent"/>
+  <disable_collisions link1="${prefix}gripper_body" link2="${prefix}finger_right" reason="Adjacent"/>
+</robot>
