@@ -25,10 +25,18 @@ class SusGrip2FHardwareInterface(Node):
         serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
         slave_id = self.get_parameter('slave_id').get_parameter_value().integer_value
         self.is_connected = False
+        self.state_read_failures = 0
 
         try:
             self.sus_2f = SusGrip2F(port=serial_port, id=slave_id)
             self.sus_2f.set_rtu_mode()
+            initial_data = self.sus_2f.reload_data()
+            if initial_data is None or len(initial_data) < 2:
+                reason = getattr(self.sus_2f, 'last_read_error', None)
+                raise RuntimeError(
+                    'serial port opened, but no valid Modbus gripper state was '
+                    f'read (slave ID {slave_id}): {reason or "invalid response"}'
+                )
             self.get_logger().info(f"Connected to gripper successfully on {serial_port} (ID: {slave_id})!")
             self.is_connected = True
         except Exception as e:
@@ -57,8 +65,11 @@ class SusGrip2FHardwareInterface(Node):
             callback_group=self.callback_group
         )
 
-        # Joint states publisher (20Hz)
-        self.joint_pub = self.create_publisher(JointState, '/susgrip/joint_states', 10)
+        # Publish directly to the topic consumed by MoveIt. This driver is
+        # launched only for real-hardware runs, so an intermediate topic and
+        # launch remap add no value and can leave MoveIt without gripper state
+        # when separate source and remap configurations drift apart.
+        self.joint_pub = self.create_publisher(JointState, '/joint_states', 10)
         self.create_timer(0.05, self.publish_joint_states, callback_group=self.callback_group)
 
         # Standard control_msgs GripperCommand Action Server
@@ -84,15 +95,32 @@ class SusGrip2FHardwareInterface(Node):
 
     def publish_joint_states(self):
         if not self.is_connected:
-            msg = JointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.position.extend([getattr(self, 'dummy_pos', 0.0), getattr(self, 'dummy_pos', 0.0)])
-            msg.name.extend(["gripper_joint", "gripper_joint_mimic"])
-            self.joint_pub.publish(msg)
+            # This node controls a physical gripper. Publishing a fabricated
+            # zero position would make MoveIt plan against an unverified state.
             return
-        data = self.sus_2f.reload_data()
+        try:
+            data = self.sus_2f.reload_data()
+        except Exception as exc:
+            data = None
+            error = str(exc)
+        else:
+            error = getattr(self.sus_2f, 'last_read_error', None)
         if data is None or not isinstance(data, list) or len(data) < 2:
+            self.state_read_failures += 1
+            if self.state_read_failures == 1 or self.state_read_failures % 100 == 0:
+                self.get_logger().error(
+                    'Cannot publish gripper joint state: Modbus read returned '
+                    f'no valid position (failure {self.state_read_failures}): '
+                    f'{error or "invalid register response"}. MoveIt will keep '
+                    'the robot state incomplete until telemetry recovers.'
+                )
             return
+        if self.state_read_failures:
+            self.get_logger().info(
+                f'Gripper telemetry recovered after {self.state_read_failures} '
+                'failed reads.'
+            )
+            self.state_read_failures = 0
         # Kinematic translation from linear distance (mm) to angular joints
         gripper_dis = float(data[1])
 
@@ -121,6 +149,15 @@ class SusGrip2FHardwareInterface(Node):
 
     def execute_action_callback(self, goal_handle):
         self.get_logger().info('Executing gripper goal...')
+
+        if not self.is_connected:
+            self.get_logger().error(
+                'Rejecting gripper motion: physical gripper is not connected.'
+            )
+            result = GripperCommand.Result()
+            result.reached_goal = False
+            goal_handle.abort()
+            return result
         
         # The action goal position represents a single finger's position in meters.
         # Total physical opening is 2x this amount, converted to mm.
@@ -228,30 +265,12 @@ class SusGrip2FHardwareInterface(Node):
                         goal_handle.publish_feedback(feedback_msg)
                         goal_handle.abort()
                         break
-            else:
-                self.get_logger().error('============= ERROR: GRIPPER IS DISCONNECTED! =============')
-                self.get_logger().error('Serial connection to /dev/ttyUSB0 failed (permission denied or unplugged).')
-                self.get_logger().error('Simulating goal execution for RViz ONLY. Real gripper WILL NOT MOVE!')
-                self.get_logger().error('===========================================================')
-                time.sleep(1.0) # simulate movement delay
-                
-                self.dummy_pos = float(target_mm) / 1000.0 # update dummy state for RViz
-                
-                result.reached_goal = True
-                result.position = float(target_mm) / 2000.0
-                feedback_msg.reached_goal = True
-                feedback_msg.position = float(target_mm) / 2000.0
-                goal_handle.publish_feedback(feedback_msg)
-                goal_handle.succeed()
-                break
             rate.sleep()
         # Populate final result in mm
         if self.is_connected:
             data = self.sus_2f.reload_data()
             if data is not None and len(data) >= 2:
                 result.position = float(data[1]) / 2000.0
-        else:
-            result.position = float(target_mm) / 2000.0
         result.stalled = False
         return result
 
@@ -283,4 +302,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-    

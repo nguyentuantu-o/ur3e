@@ -27,7 +27,8 @@ def launch_setup(context, *args, **kwargs):
     gripper_port = LaunchConfiguration("gripper_port")
     gripper_slave_id = LaunchConfiguration("gripper_slave_id")
 
-    # Start the physical SusGrip serial driver for real-robot runs. The
+    # Start the physical SusGrip serial driver for real-robot runs. It
+    # publishes measured gripper joints directly on /joint_states. The
     # simulation launch has its own ros2_control gripper controller.
     susgrip_hardware_node = Node(
         condition=UnlessCondition(use_sim_time),
@@ -35,7 +36,6 @@ def launch_setup(context, *args, **kwargs):
         executable="hardware_interface",
         name="susgrip_2f_hardware_interface",
         output="screen",
-        remappings=[("/susgrip/joint_states", "/joint_states")],
         parameters=[{
             "serial_port": gripper_port,
             "slave_id": ParameterValue(gripper_slave_id, value_type=int),

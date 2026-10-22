@@ -23,6 +23,7 @@ class SusGrip2F:
         self.id = id
         self.timeout = timeout
         self.data = []
+        self.last_read_error = None
    
     def s16(self,value):
         return -(value & 0x8000) | (value & 0x7fff)
@@ -83,11 +84,29 @@ class SusGrip2F:
 
 # The susgrip read data
     def reload_data(self):
-        if self.gripper_rtu.is_socket_open():
-            registers  = self.gripper_rtu.read_input_registers(0, count=6, device_id=self.id)
-            if registers is not None and not registers.isError():
-                return registers.registers
-        return None
+        if not self.gripper_rtu.is_socket_open():
+            self.last_read_error = 'serial connection is not open'
+            return None
+        try:
+            registers = self.gripper_rtu.read_input_registers(
+                0, count=6, device_id=self.id
+            )
+        except Exception as exc:
+            self.last_read_error = f'Modbus read raised {type(exc).__name__}: {exc}'
+            return None
+        if registers is None:
+            self.last_read_error = 'Modbus read returned no response'
+            return None
+        if registers.isError():
+            self.last_read_error = f'Modbus error response: {registers}'
+            return None
+        if len(registers.registers) < 2:
+            self.last_read_error = (
+                f'Modbus response contained only {len(registers.registers)} registers'
+            )
+            return None
+        self.last_read_error = None
+        return registers.registers
     
     def read_data_json(self):
         self.data = self.reload_data()
@@ -206,5 +225,3 @@ class SusGrip2F:
 
     def disconnect(self):
         self.gripper_rtu.close()      
-
-    
