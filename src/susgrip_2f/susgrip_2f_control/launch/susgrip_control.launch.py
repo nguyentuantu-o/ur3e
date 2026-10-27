@@ -99,7 +99,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "slave_id",
-            default_value="1",
+            default_value="2",
             description="Slave ID for Modbus gripper"
         )
     )

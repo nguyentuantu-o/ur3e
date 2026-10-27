@@ -18,7 +18,7 @@ APPROACH_CLEARANCE = 0.15
 TCP_GRASP_OFFSET = 0.06
 GRASP_DEPTH_OFFSET = 0.015
 LIFT_OFFSET = 0.15
-OPEN_POSITION = 0.06
+OPEN_POSITION = 0.065
 CLOSE_POSITION = 0.042
 MAX_EFFORT = 10.0
 
@@ -94,17 +94,19 @@ def radial_side_grasp_geometry(
     approach_x = grasp_x - approach_clearance * direction_x
     approach_y = grasp_y - approach_clearance * direction_y
 
-    # q=(0.5, 0.5, 0.5, 0.5) points TCP +Z along base_link +X. Rotate that
-    # pose about base_link Z so the gripper points toward each random bottle.
+    # q=(0.5, 0.5, 0.5, 0.5) pointed TCP +Z along base_link +X.
+    # Rotated +90 deg around local TCP Z (approach axis) so wrist_3 solves at 90 deg
+    # to account for physical gripper mounted rotated 90 deg relative to simulation.
+    # Resulting quaternion = q_yaw * q_base * q_rot_z(90 deg)
     yaw = math.atan2(object_y, object_x)
     cosine = math.cos(0.5 * yaw)
     sine = math.sin(0.5 * yaw)
+    sq = math.sqrt(0.5)
     quaternion = (
-        0.5 * (cosine - sine),
-        0.5 * (cosine + sine),
-        0.5 * (cosine + sine),
-        0.5 * (cosine - sine),
-    )
+        sq * cosine,
+        sq * sine,
+        sq * cosine,
+        -sq * sine,)
 
     return {
         'approach_x': approach_x,

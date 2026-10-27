@@ -138,6 +138,6 @@ def generate_launch_description():
         DeclareLaunchArgument("launch_rviz", default_value="true", description="Launch RViz?"),
         DeclareLaunchArgument("launch_moveit", default_value="true", description="Launch MoveIt server?"),
         DeclareLaunchArgument("gripper_port", default_value="/dev/ttyUSB0", description="Serial port for the physical SusGrip gripper"),
-        DeclareLaunchArgument("gripper_slave_id", default_value="1", description="Modbus slave ID for the physical SusGrip gripper"),
+        DeclareLaunchArgument("gripper_slave_id", default_value="2", description="Modbus slave ID for the physical SusGrip gripper"),
     ]
     return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])

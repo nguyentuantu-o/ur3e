@@ -89,7 +89,7 @@ RViz được bật mặc định. Với `use_sim_time:=false`, launch dùng URD
 gắn SusGrip, khởi động driver gripper qua cổng serial, và đưa joint state của
 gripper lên `/joint_states`. Action server là `/gripper_controller/gripper_cmd`;
 `send_goal_client.py` tự dùng action này trên phần cứng. Nếu gripper dùng cổng
-khác, đổi `gripper_port`; Modbus ID có thể đặt bằng `gripper_slave_id:=1`.
+khác, đổi `gripper_port`; Modbus ID có thể đặt bằng `gripper_slave_id:=86`.
 
 ### Terminal 3: Chạy tác vụ gắp và rót trên robot thật
 
@@ -133,7 +133,7 @@ Người dùng có thể tùy biến hành vi hệ thống thông qua việc tru
 | `launch_rviz` | `true` | Tùy chọn hiển thị công cụ trực quan hóa RViz 2. |
 | `launch_moveit` | `true` | Tùy chọn tự động gọi MoveIt Planning Server (`ur_moveit.launch.py`). |
 | `gripper_port` | `/dev/ttyUSB0` | Cổng serial của SusGrip khi chạy robot thật. |
-| `gripper_slave_id` | `1` | Modbus slave ID của SusGrip. |
+| `gripper_slave_id` | `86` | Modbus slave ID mặc định của SusGrip 2F. |
 
 *Ví dụ cấu hình vận hành thực tế không sử dụng giao diện đồ họa RViz 2:*
 ```bash

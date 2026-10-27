@@ -50,8 +50,8 @@ ARM_JOINT_NAMES = [
 class UR3ActionClient(Node):
 
     GRIPPER_MIN_POSITION = 0.0
-    # Keep a small margin from the simulated prismatic joint's hard stop.
-    GRIPPER_MAX_POSITION = 0.06
+    # Allow opening to gripper max stroke (0.065m per finger = 130mm total)
+    GRIPPER_MAX_POSITION = 0.065
 
     def __init__(self):
         super().__init__('ur3_action_client')
@@ -535,7 +535,7 @@ class UR3ActionClient(Node):
         future = self._arm_action_client.send_goal_async(goal_msg)
         future.add_done_callback(self.arm_goal_response_callback)
 
-    def detach_object(self, open_position=0.06, max_effort=100.0):
+    def detach_object(self, open_position=0.065, max_effort=100.0):
         """Detach pick_box, then automatically open the gripper."""
 
         goal_msg = UR3Control.Goal()
@@ -1064,10 +1064,10 @@ def parse_args(argv):
         parser.error('--lift-offset must be positive')
     if not 1.0 <= abs(parsed.pour_angle_deg) <= 150.0:
         parser.error('--pour-angle-deg magnitude must be between 1 and 150')
-    if not 0.0 <= parsed.close_position <= parsed.open_position <= 0.06:
+    if not 0.0 <= parsed.close_position <= parsed.open_position <= 0.065:
         parser.error(
             'gripper positions must satisfy '
-            '0 <= close-position <= open-position <= 0.06')
+            '0 <= close-position <= open-position <= 0.065')
     if (
         parsed.transport_dx is not None
         and parsed.transport_dy is not None

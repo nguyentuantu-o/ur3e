@@ -12,7 +12,7 @@
   </group>
 
   <group_state name="open" group="${prefix}gripper">
-    <joint name="${prefix}gripper_joint" value="0.06"/>
+    <joint name="${prefix}gripper_joint" value="0.065"/>
   </group_state>
   <group_state name="closed" group="${prefix}gripper">
     <joint name="${prefix}gripper_joint" value="0.0"/>
