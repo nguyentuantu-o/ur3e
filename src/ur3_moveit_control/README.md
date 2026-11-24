@@ -114,11 +114,12 @@ ros2 run ur3_moveit_control send_goal_client.py \
 ```
 
 Client tự đưa tay về home, mở gripper, tiếp cận và gắp chai, nâng, di chuyển
-đến điểm rót rồi xoay cổ tay. Lệnh này **bắt đầu chuyển động thật ngay**. Các
-tọa độ ví dụ chỉ đúng nếu bàn/chai được đặt theo bố trí tương ứng; hãy kiểm tra
-TCP, giới hạn vùng làm việc và vị trí rót trong RViz trước khi chạy. Chế độ
-phần cứng cập nhật chai mang theo trong planning scene MoveIt và không cần
-Gazebo.
+đến điểm rót rồi xoay cổ tay. Sau đó nó đưa cổ tay/chai về tư thế và vị trí
+ban đầu, mở càng, nâng TCP lên rồi về home. Lệnh này **bắt đầu chuyển động thật
+ngay**. Các tọa độ ví dụ chỉ đúng nếu bàn/chai được đặt theo bố trí tương ứng;
+hãy kiểm tra TCP, giới hạn vùng làm việc và vị trí rót trong RViz trước khi
+chạy. Chế độ phần cứng cập nhật chai mang theo trong planning scene MoveIt và
+không cần Gazebo.
 
 ---
 
@@ -141,6 +142,8 @@ ros2 launch ur3_moveit_control ur3_demo.launch.py ur_type:=ur3e use_sim_time:=fa
 ```
 
 ---
+# lệnh chạy truyền tham số dx dy
+ros2 run ur3_moveit_control send_goal_client.py   --object-x 0.62 --object-y 0.0 --object-z 0.13   --transport-dx -0.04   --transport-dy 0.25
 
 ## Xử lý lỗi hệ thống (Troubleshooting)
 
@@ -176,11 +179,13 @@ không tham gia collision checking và không chặn đường Cartesian đi và
    thế rót, chương trình detach nội bộ, chuyển ngay entity tới vị trí
    parking và xóa collision object cũ để trial sau dùng lại chai.
 
-`send_goal_client.py` dừng khi chai vẫn attached ở tư thế rót. Tham số
-`--pour-angle-deg` đổi độ nghiêng; dùng giá trị âm, ví dụ `-100`, nếu
-cần rót theo hướng ngược lại. Chuyển động này dùng joint-space
-planning có collision checking; các cấu hình PRM, IK và Cartesian cũ không
-thay đổi.
+Sau khi rót, `send_goal_client.py` giữ nguyên tư thế rót trong **5 giây**, rồi
+hoàn tác góc `wrist_3_joint` về đúng tư thế side-grasp, mang chai về tọa độ
+gắp ban đầu, hạ chai xuống cao độ ban đầu, detach/mở càng, nâng TCP thẳng lên
+một đoạn `lift_offset`, rồi mới về `home`.
+Tham số `--pour-angle-deg` đổi độ nghiêng; dùng giá trị âm, ví dụ `-100`, nếu
+cần rót theo hướng ngược lại. Chuyển động xoay này dùng joint-space planning
+có collision checking; các cấu hình PRM, IK và Cartesian cũ không thay đổi.
 
 Chuỗi gắp dùng kiểu **radial side grasp** giống ảnh tham chiếu. Với mỗi tọa độ
 chai, hướng tiếp cận được tính bằng `yaw = atan2(object_y, object_x)`, vì vậy TCP

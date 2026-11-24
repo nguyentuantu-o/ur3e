@@ -104,7 +104,8 @@ class SusGrip2F:
             return None
 
     def s16(self, value):
-        return -(value & 0x8000) | (value & 0x7fff)
+        val = int(value) & 0xFFFF
+        return val - 65536 if val >= 32768 else val
 
     def constrain(self, val, min_val, max_val):
         return min(max_val, max(min_val, val))
@@ -119,23 +120,28 @@ class SusGrip2F:
     def set_rtu_mode(self):
         """
         Activate gripper matching Apicoo protocol:
-          1. Release emergency stop: write reg 0 = 0
-          2. Set mode: write reg 257 = 1
+          1. Release emergency stop & clear error: write reg 0 = 0
+          2. Normal Mode (disable IO mode): write reg 257 = 0
+             (0 = Normal Modbus Mode, 1 = IO Mode)
         """
         try:
-            # Step 1: Release EMCY (register 0 = 0)
-            res0 = self._write_register(0, 0)
+            # Step 1: Release EMCY / Clear Errors (register 0 = 0)
+            res0 = self._write_registers(0, [0])
+            if res0 is None or res0.isError():
+                res0 = self._write_register(0, 0)
             if res0 is not None and res0.isError():
                 self.last_write_error = f'Release EMCY failed: {res0}'
                 return False
-            time.sleep(0.1)
+            time.sleep(0.05)
 
-            # Step 2: Set Mode / Activate (register 257 = 1)
-            res1 = self._write_register(257, 1)
+            # Step 2: Normal Modbus Mode (register 257 = 0)
+            res1 = self._write_registers(257, [0])
+            if res1 is None or res1.isError():
+                res1 = self._write_register(257, 0)
             if res1 is not None and res1.isError():
-                self.last_write_error = f'Activate mode failed: {res1}'
+                self.last_write_error = f'Activate Normal mode failed: {res1}'
                 return False
-            time.sleep(0.2)
+            time.sleep(0.1)
 
             self.last_write_error = None
             return True
@@ -155,8 +161,10 @@ class SusGrip2F:
         tor = int(round(self.constrain(tor, 1, 100)))
         accel = 1000  # Default acceleration mm/s^2
 
-        # Try multi-register write first
-        for payload in [[pos, vel, accel, tor], [pos, vel, accel], [pos]]:
+        # Match Apicoo move protocol:
+        # 1. Multi-register write [pos, vel, accel] (3 registers)
+        # 2. Or single-register write [pos] (1 register)
+        for payload in [[pos, vel, accel], [pos]]:
             try:
                 res = self._write_registers(1, payload)
                 if res is not None and not res.isError():
@@ -228,6 +236,7 @@ class SusGrip2F:
         in_motion = raw[5] if len(raw) > 5 else 0
         obj_detected = raw[6] if len(raw) > 6 else 0
         err_code = raw[4] if len(raw) > 4 else 0
+        raw_rms = self.s16(raw[3]) if len(raw) > 3 else 0
 
         # Chuẩn hóa format data tương thích hoàn toàn với hardware_interface.py:
         # data[0]: bit 7 là gMOVE (1 nếu đang chạy, 0 nếu dừng)
@@ -246,7 +255,7 @@ class SusGrip2F:
             status,             # data[0]: status bitfield
             err_code,           # data[1]: error
             int(pos_mm * 2),    # data[2]: pos mm * 2
-            raw[3],             # data[3]: force / RMS
+            raw_rms,            # data[3]: force / RMS (signed)
             0,                  # data[4]: temp
             in_motion,          # data[5]: motion
             obj_detected        # data[6]: obj

@@ -52,6 +52,7 @@ class UR3ActionClient(Node):
     GRIPPER_MIN_POSITION = 0.0
     # Allow opening to gripper max stroke (0.065m per finger = 130mm total)
     GRIPPER_MAX_POSITION = 0.065
+    POUR_HOLD_SECONDS = 5.0
 
     def __init__(self):
         super().__init__('ur3_action_client')
@@ -76,6 +77,7 @@ class UR3ActionClient(Node):
         )
         self._pending_lift_offset = None
         self._gripper_completion_timer = None
+        self._pour_hold_timer = None
         self._pick_sequence = None
         self._latest_gripper_effort = None
         self._peak_gripper_effort = 0.0
@@ -339,8 +341,8 @@ class UR3ActionClient(Node):
             close_position=FIXED_CLOSE_POSITION,
             max_effort=FIXED_MAX_EFFORT,
             pour_angle_deg=FIXED_POUR_WRIST_ANGLE_DEG,
-            transport_dx=0.3,
-            transport_dy=-0.05):
+            transport_dx=-0.17,
+            transport_dy=0):
         """Run the shared side-grasp flow for an object pose in base_link."""
 
         # Check connectivity before creating the asynchronous state machine.
@@ -361,6 +363,9 @@ class UR3ActionClient(Node):
             return False
 
         grasp_z = float(object_z) + float(tcp_grasp_offset)
+        # The transport command changes only X/Y.  Therefore the TCP height
+        # at the pour point must be precisely the height reached after lift.
+        lifted_grasp_z = grasp_z + float(lift_offset)
         geometry = radial_side_grasp_geometry(
             float(object_x),
             float(object_y),
@@ -386,6 +391,8 @@ class UR3ActionClient(Node):
             'grasp_x': geometry['grasp_x'],
             'grasp_y': geometry['grasp_y'],
             'grasp_z': grasp_z,
+            'lifted_grasp_z': lifted_grasp_z,
+            'pour_z': lifted_grasp_z,
             'approach_x': geometry['approach_x'],
             'approach_y': geometry['approach_y'],
             'advance_x': geometry['advance_x'],
@@ -398,6 +405,10 @@ class UR3ActionClient(Node):
             'close_position': float(close_position),
             'max_effort': float(max_effort),
             'pour_angle_deg': float(pour_angle_deg),
+            # Captured immediately before pouring so the wrist can return to
+            # the exact side-grasp orientation, including a possible
+            # direction flip made to avoid the wrist_3 joint limits.
+            'pre_pour_joints': None,
         }
 
         self.get_logger().info(
@@ -408,6 +419,8 @@ class UR3ActionClient(Node):
             f'grasp_tcp=({geometry["grasp_x"]:.3f}, '
             f'{geometry["grasp_y"]:.3f}, {grasp_z:.3f}), '
             f'approach_yaw={math.degrees(geometry["yaw"]):+.1f} deg, '
+            f'lifted_tcp_z={lifted_grasp_z:.3f}, '
+            f'pour_tcp_z={lifted_grasp_z:.3f}, '
             f'post_lift_cartesian=(dx={transport_dx:+.3f}, '
             f'dy={transport_dy:+.3f}, dz=+0.000)'
         )
@@ -469,6 +482,8 @@ class UR3ActionClient(Node):
             self.abort_pick_sequence(f'pour_wrist failed: {error}')
             return
 
+        self._pick_sequence['pre_pour_joints'] = current_joints
+
         self.get_logger().info(
             'Planning bottle-pouring tilt using wrist_3_joint only: '
             f'requested={self._pick_sequence["pour_angle_deg"]:+.1f} deg, '
@@ -477,10 +492,67 @@ class UR3ActionClient(Node):
         )
         self.send_joint_goal(*target_joints)
 
+    def rotate_gripper_back_to_grasp(self):
+        """Undo the pour rotation before carrying the bottle back."""
+
+        pre_pour_joints = self._pick_sequence.get('pre_pour_joints')
+        if pre_pour_joints is None:
+            self.abort_pick_sequence(
+                'return_wrist has no saved pre-pour joint target'
+            )
+            return
+
+        self.get_logger().info(
+            'Returning wrist_3 to the side-grasp orientation before moving '
+            'the bottle back: '
+            f'target={pre_pour_joints[5]:+.3f} rad'
+        )
+        self.send_joint_goal(*pre_pour_joints)
+
+    def start_pour_hold(self):
+        """Keep the bottle at the pouring angle without blocking ROS callbacks."""
+
+        self.clear_pour_hold_timer()
+        self.get_logger().info(
+            f'Pour pose reached; holding for {self.POUR_HOLD_SECONDS:.1f} '
+            'seconds before returning the bottle'
+        )
+        self._pour_hold_timer = self.create_timer(
+            self.POUR_HOLD_SECONDS,
+            self.pour_hold_complete,
+        )
+
+    def clear_pour_hold_timer(self):
+        """Cancel the one-shot pour-hold timer when the sequence ends early."""
+
+        if self._pour_hold_timer is None:
+            return
+        self._pour_hold_timer.cancel()
+        self.destroy_timer(self._pour_hold_timer)
+        self._pour_hold_timer = None
+
+    def pour_hold_complete(self):
+        """Resume the return sequence after the fixed pouring dwell time."""
+
+        self.clear_pour_hold_timer()
+        if (
+            self._pick_sequence is None
+            or self._pick_sequence['stage'] != 'pour_holding'
+        ):
+            return
+
+        self._pick_sequence['stage'] = 'returning_wrist'
+        self.get_logger().info(
+            'Five-second pour hold completed; restoring the side-grasp '
+            'wrist orientation before returning the bottle'
+        )
+        self.rotate_gripper_back_to_grasp()
+
     def abort_pick_sequence(self, reason):
         """Stop the combined sequence after a failed stage."""
 
         self.get_logger().error(f'Bottle grasp aborted: {reason}')
+        self.clear_pour_hold_timer()
         self._pick_sequence = None
         rclpy.shutdown()
 
@@ -516,7 +588,7 @@ class UR3ActionClient(Node):
         future = self._arm_action_client.send_goal_async(goal_msg)
         future.add_done_callback(self.arm_goal_response_callback)
 
-    def move_to_xy(self, target_x, target_y):
+    def move_to_xy(self, target_x, target_y, expected_z=None):
         """Move to absolute base_link X/Y while keeping current Z and orientation."""
 
         goal_msg = UR3Control.Goal()
@@ -528,9 +600,12 @@ class UR3ActionClient(Node):
             self.get_logger().error('The UR3 action server is not available')
             return
 
+        z_message = 'keeping current Z'
+        if expected_z is not None:
+            z_message += f' (expected Z={float(expected_z):+.3f} m)'
         self.get_logger().info(
             f'Requesting absolute XY target in base_link: '
-            f'x={target_x:+.3f}, y={target_y:+.3f}; keeping current Z'
+            f'x={target_x:+.3f}, y={target_y:+.3f}; {z_message}'
         )
         future = self._arm_action_client.send_goal_async(goal_msg)
         future.add_done_callback(self.arm_goal_response_callback)
@@ -595,6 +670,16 @@ class UR3ActionClient(Node):
             f'Detach action completed: success={result.success}, '
             f'message="{result.message}"'
         )
+        if not result.success:
+            if self._pick_sequence is not None:
+                self.abort_pick_sequence(
+                    f'detach stage failed: {result.message}'
+                )
+            else:
+                self.get_logger().error(
+                    'Pick-box detach failed; gripper will remain closed'
+                )
+            return
         if (
             self._pick_sequence is not None
             and self._pick_sequence['stage'] == 'detaching'
@@ -704,17 +789,38 @@ class UR3ActionClient(Node):
 
             if stage == 'lifting':
                 self._pick_sequence['stage'] = 'transporting'
-                self.get_logger().info('Transporting to target XY (0.564, 0.221) via Cartesian path')
-                
-                # Gọi MOVE_TO_XY đi tới điểm mục tiêu
-                self.move_to_xy(0.564, 0.3)
+                pour_x = (
+                    self._pick_sequence['grasp_x']
+                    + self._pick_sequence['transport_dx']
+                )
+                pour_y = (
+                    self._pick_sequence['grasp_y']
+                    + self._pick_sequence['transport_dy']
+                )
+                self.get_logger().info(
+                    'Transporting from grasp TCP '
+                    f'({self._pick_sequence["grasp_x"]:.3f}, '
+                    f'{self._pick_sequence["grasp_y"]:.3f}) by '
+                    f'(dx={self._pick_sequence["transport_dx"]:+.3f}, '
+                    f'dy={self._pick_sequence["transport_dy"]:+.3f}) to '
+                    f'pour TCP ({pour_x:.3f}, {pour_y:.3f}, '
+                    f'{self._pick_sequence["pour_z"]:.3f})'
+                )
+
+                # MOVE_TO_XY changes only X/Y; the pour height is the height
+                # obtained immediately after the grasp lift.
+                self.move_to_xy(
+                    pour_x,
+                    pour_y,
+                    expected_z=self._pick_sequence['pour_z'],
+                )
                 return
 
 
             if stage == 'transporting':
                 self._pick_sequence['stage'] = 'pouring'
                 self.get_logger().info(
-                    'Bottle grasp stage 6/6: transport completed; rotating '
+                    'Transport completed; rotating '
                     'the gripper into '
                     'the pouring pose while keeping the bottle attached'
                 )
@@ -722,10 +828,61 @@ class UR3ActionClient(Node):
                 return
 
             if stage == 'pouring':
+                self._pick_sequence['stage'] = 'pour_holding'
+                self.start_pour_hold()
+                return
+
+            if stage == 'returning_wrist':
+                self._pick_sequence['stage'] = 'returning_xy'
                 self.get_logger().info(
-                    'Bottle side-grasp, transport, and pouring rotation '
-                    'completed successfully; bottle remains attached and '
-                    'the gripper remains closed'
+                    'Grasp orientation restored; returning the lifted bottle '
+                    'to its original XY position'
+                )
+                self.move_to_xy(
+                    self._pick_sequence['grasp_x'],
+                    self._pick_sequence['grasp_y'],
+                    expected_z=self._pick_sequence['lifted_grasp_z'],
+                )
+                return
+
+            if stage == 'returning_xy':
+                self._pick_sequence['stage'] = 'lowering'
+                self.get_logger().info(
+                    'Bottle is above its original position; lowering it to '
+                    'the original grasp height before release'
+                )
+                self.move_cartesian(
+                    0.0,
+                    0.0,
+                    -self._pick_sequence['lift_offset'],
+                    strict=True,
+                )
+                return
+
+            if stage == 'lowering':
+                self._pick_sequence['stage'] = 'detaching'
+                self.get_logger().info(
+                    'Bottle returned to its initial pose; detaching and '
+                    'opening the gripper'
+                )
+                self.detach_object(
+                    self._pick_sequence['open_position'],
+                    self._pick_sequence['max_effort'],
+                )
+                return
+
+            if stage == 'retreating':
+                self._pick_sequence['stage'] = 'final_homing'
+                self.get_logger().info(
+                    'Gripper cleared the released bottle; returning home'
+                )
+                self.send_home_goal()
+                return
+
+            if stage == 'final_homing':
+                self.get_logger().info(
+                    'Bottle side-grasp, pour, return, release, and home '
+                    'sequence completed successfully'
                 )
                 self.save_successful_waypoint()
                 self._pick_sequence = None
@@ -988,12 +1145,17 @@ class UR3ActionClient(Node):
                 return
 
             if stage == 'releasing':
+                self._pick_sequence['stage'] = 'retreating'
                 self.get_logger().info(
-                    'Pick-and-move sequence completed successfully; '
-                    'the object was released at the target'
+                    'Gripper opened; lifting straight up to clear the '
+                    'released bottle before moving home'
                 )
-                self._pick_sequence = None
-                rclpy.shutdown()
+                self.move_cartesian(
+                    0.0,
+                    0.0,
+                    self._pick_sequence['lift_offset'],
+                    strict=True,
+                )
                 return
 
         if self._pending_lift_offset is not None:

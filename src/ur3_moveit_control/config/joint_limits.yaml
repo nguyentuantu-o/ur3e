@@ -26,6 +26,12 @@ joint_limits:
     has_acceleration_limits: true
     max_acceleration: 5.0
   wrist_3_joint:
+    # Match the bounded wrist_3 URDF used on hardware.  This prevents a
+    # trajectory from wrapping a target near +2*pi to an equivalent value
+    # near zero between two 2 ms controller samples.
+    has_position_limits: true
+    min_position: -6.283185307
+    max_position: 6.283185307
     has_velocity_limits: true
     max_velocity: 6.28
     has_acceleration_limits: true

@@ -72,7 +72,12 @@ joint_limits:
     # acceleration limits are not publicly available
     has_acceleration_limits: false
     has_effort_limits: true
-    has_position_limits: false
+    # Keep wrist_3 bounded for the external-control driver.  A continuous
+    # joint lets MoveIt normalize +2*pi to 0, which the robot then interprets
+    # as a 2*pi jump in one 2 ms control cycle.
+    has_position_limits: true
     has_velocity_limits: true
     max_effort: 9.0
+    min_position: !degrees -360.0
+    max_position: !degrees  360.0
     max_velocity: !degrees  360.0
